@@ -3,7 +3,8 @@ import express from 'express';
 import dotenv from 'dotenv';
 import { Resend } from 'resend';
 import cors from 'cors';
-import { google } from 'googleapis';
+// Google Sheets API is no longer used, so remove the import.
+// import { google } from 'googleapis'; 
 
 dotenv.config();
 
@@ -19,76 +20,13 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 const toEmail = process.env.TO_EMAIL;
 const fromEmail = process.env.FROM_EMAIL;
 
-// Google Sheets configuration
-const SPREADSHEET_ID = process.env.GOOGLE_SPREADSHEET_ID;
-const SHEET_NAME = process.env.GOOGLE_SHEET_NAME || 'Form Submissions';
+// --- REMOVED: All Google Sheets API code below this line ---
+// Google Sheets configuration and authentication logic is removed.
+// The `appendToSheet` function is also removed.
+// --- END OF REMOVED CODE ---
 
-// Configure Google Sheets authentication
-let auth;
-
-if (process.env.GOOGLE_SERVICE_ACCOUNT_KEY_BASE64) {
-    // For production (Render) - using Base64 encoded credentials
-    try {
-        const decodedKey = Buffer.from(process.env.GOOGLE_SERVICE_ACCOUNT_KEY_BASE64, 'base64').toString('utf8');
-        const credentials = JSON.parse(decodedKey);
-        console.log('🔑 Using Base64 credentials');
-        auth = new google.auth.GoogleAuth({
-            credentials: credentials,
-            scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-        });
-    } catch (error) {
-        console.error('❌ Error parsing Base64 credentials:', error);
-    }
-} else if (process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE) {
-    // For local development - using key file path
-    console.log('🔑 Using local key file');
-    auth = new google.auth.GoogleAuth({
-        keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE,
-        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-    });
-} else {
-    console.error('❌ Google Sheets authentication not configured');
-}
-
-const sheets = google.sheets({ version: 'v4', auth });
-
-// Function to append data to Google Sheet
-async function appendToSheet(name, email, details) {
-    try {
-        console.log('📝 Attempting to append data to sheet:', SPREADSHEET_ID);
-
-        const timestamp = new Date().toLocaleString('en-IN', {
-            timeZone: 'Asia/Kolkata',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit'
-        });
-
-        const values = [[timestamp, name, email, details]];
-
-        console.log('📊 Data to append:', values);
-
-        const response = await sheets.spreadsheets.values.append({
-            spreadsheetId: SPREADSHEET_ID,
-            range: `${SHEET_NAME}!A:D`,
-            valueInputOption: 'USER_ENTERED',
-            resource: {
-                values,
-            },
-        });
-
-        console.log('✅ Data successfully added to Google Sheet:', response.data);
-        return true;
-    } catch (error) {
-        console.error('❌ Error adding data to Google Sheet:');
-        console.error('Error message:', error.message);
-        console.error('Error details:', error.response?.data || error);
-        return false;
-    }
-}
+// URL of your Google Apps Script Web App
+const GOOGLE_APP_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxA55iXO7PW6pTEGRZ2NkmrwM1h0iL9XIAlazPEdwLlQE3vTyNE6X1bg-yRmsHXnlnA/exec';
 
 // Handle preflight (OPTIONS) requests
 app.options('/api/submit-form', cors());
@@ -105,27 +43,23 @@ app.post('/api/submit-form', async (req, res) => {
         return res.status(500).json({ error: 'Server configuration error' });
     }
 
-    if (!SPREADSHEET_ID) {
-        return res.status(500).json({ error: 'Google Sheets not configured' });
-    }
-
     let emailSent = false;
     let sheetUpdated = false;
 
+    // Send email using Resend
     try {
-        // Send email using Resend
         const { error } = await resend.emails.send({
             from: `Website Inquiry <${fromEmail}>`,
             to: [toEmail],
             subject: `New Project Inquiry from ${name}`,
             replyTo: email,
             html: `
-        <h1>New Project Inquiry</h1>
-        <p><strong>Name:</strong> ${name}</p>
-        <p><strong>Email:</strong> <a href="mailto:${email}">${email}</a></p>
-        <h3>Project Details:</h3>
-        <p>${details}</p>
-      `,
+                <h1>New Project Inquiry</h1>
+                <p><strong>Name:</strong> ${name}</p>
+                <p><strong>Email:</strong> <a href="mailto:${email}">${email}</a></p>
+                <h3>Project Details:</h3>
+                <p>${details}</p>
+            `,
         });
 
         if (error) {
@@ -138,11 +72,36 @@ app.post('/api/submit-form', async (req, res) => {
         console.error('Email sending error:', err);
     }
 
+    // Save to Google Sheet using the Apps Script Web App
     try {
-        // Save to Google Sheet
-        sheetUpdated = await appendToSheet(name, email, details);
+        console.log('📝 Attempting to post data to Google Apps Script.');
+        
+        // The Apps Script expects a 'message' key, so we map 'details' to 'message'.
+        const response = await fetch(GOOGLE_APP_SCRIPT_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                name: name,
+                email: email,
+                message: details
+            }),
+        });
+
+        if (response.ok) {
+            const result = await response.json();
+            if (result.result === 'success') {
+                sheetUpdated = true;
+                console.log('✅ Data successfully added to Google Sheet via Apps Script.');
+            } else {
+                console.error('❌ Apps Script returned a non-success result:', result);
+            }
+        } else {
+            console.error('❌ Failed to post data to Apps Script. Status:', response.status);
+        }
     } catch (err) {
-        console.error('Google Sheet error:', err);
+        console.error('Google Apps Script error:', err);
     }
 
     // Return response based on what succeeded
